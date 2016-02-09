@@ -30,6 +30,16 @@ from manila import utils
 
 LOG = log.getLogger(__name__)
 
+
+neutron_network_plugin_opts = [
+    cfg.StrOpt(
+        'neutron_physical_net_name',
+        help="The name of the physical network to determine which net segment"
+             "is used",
+        default=None,
+        deprecated_group='DEFAULT'),
+]
+
 neutron_single_network_plugin_opts = [
     cfg.StrOpt(
         'neutron_net_id',
@@ -91,6 +101,9 @@ class NeutronNetworkPlugin(network.NetworkBaseAPI):
         self._neutron_api_args = args
         self._neutron_api_kwargs = kwargs
         self._label = kwargs.pop('label', 'user')
+        CONF.register_opts(
+            neutron_network_plugin_opts,
+            group=self.neutron_api.config_group_name)
 
     @property
     def label(self):
@@ -201,10 +214,34 @@ class NeutronNetworkPlugin(network.NetworkBaseAPI):
     def _save_neutron_network_data(self, context, share_network):
         net_info = self.neutron_api.get_network(
             share_network['neutron_net_id'])
+        segmentation_id = None
+        network_type = None
+
+        if 'segments' in net_info:
+            # we have a multi segment network and need to identify the
+            # lowest segment used for binding
+            phy_nets = []
+            phy = self.neutron_api.configuration.neutron_physical_net_name
+            if not phy:
+                raise exception.NetworkBadConfigurationException(
+                        "Cannot identify segment used for binding. Please "
+                        "add neutron_physical_net_name in configuration")
+            for segment in net_info['segments']:
+                phy_nets.append(segment['provider:physical_network'])
+                if segment['provider:physical_network'] == phy:
+                    segmentation_id = segment['provider:segmentation_id']
+                    network_type = segment['provider:network_type']
+            if not segmentation_id or not network_type:
+                raise exception.NetworkBadConfigurationException(
+                    "No matching neutron_physical_net_name found %s (found:"
+                    "%s)" % (phy, phy_nets))
+        else:
+            network_type = net_info['provider:network_type']
+            segmentation_id = net_info['provider:segmentation_id']
 
         provider_nw_dict = {
-            'network_type': net_info['provider:network_type'],
-            'segmentation_id': net_info['provider:segmentation_id']
+            'network_type': network_type,
+            'segmentation_id': segmentation_id
         }
         share_network.update(provider_nw_dict)
 

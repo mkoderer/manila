@@ -89,6 +89,16 @@ fake_network_allocation = {
 }
 
 
+fake_nw_info = {'segments': [
+    {'provider:network_type': 'vlan',
+     'provider:physical_network': 'net1',
+     'provider:segmentation_id': 3926},
+    {'provider:network_type': 'vxlan',
+     'provider:physical_network': None,
+     'provider:segmentation_id': 2000}]
+}
+
+
 class NeutronNetworkPluginTest(test.TestCase):
 
     def setUp(self):
@@ -274,6 +284,55 @@ class NeutronNetworkPluginTest(test.TestCase):
                 self.fake_context,
                 fake_share_network['id'],
                 share_nw_update_dict)
+
+    @mock.patch.object(db_api, 'share_network_update', mock.Mock())
+    def test_save_neutron_network_data_multi_segment(self):
+        share_nw_update_dict = {'network_type': 'vlan',
+                                'segmentation_id': 3926}
+        config_data = {
+            'DEFAULT': {
+                'neutron_physical_net_name': 'net1',
+            }
+        }
+
+        self.mock_object(self.plugin.neutron_api, 'get_network')
+        self.plugin.neutron_api.get_network.return_value = fake_nw_info
+
+        with test_utils.create_temp_config_with_opts(config_data):
+            self.plugin._save_neutron_network_data(self.fake_context,
+                                                   fake_share_network)
+
+        self.plugin.neutron_api.get_network.assert_called_once_with(
+            fake_share_network['neutron_net_id'])
+        self.plugin.db.share_network_update.assert_called_once_with(
+            self.fake_context,
+            fake_share_network['id'],
+            share_nw_update_dict)
+
+    @mock.patch.object(db_api, 'share_network_update', mock.Mock())
+    def test_save_neutron_network_data_multi_segment_without_ident(self):
+        config_data = {
+            'DEFAULT': {
+                'neutron_physical_net_name': 'net100',
+            }
+        }
+
+        self.mock_object(self.plugin.neutron_api, 'get_network')
+        self.plugin.neutron_api.get_network.return_value = fake_nw_info
+
+        with test_utils.create_temp_config_with_opts(config_data):
+            self.assertRaises(exception.NetworkBadConfigurationException,
+                              self.plugin._save_neutron_network_data,
+                              self.fake_context, fake_share_network)
+
+    @mock.patch.object(db_api, 'share_network_update', mock.Mock())
+    def test_save_neutron_network_data_multi_segment_without_cfg(self):
+        self.mock_object(self.plugin.neutron_api, 'get_network')
+        self.plugin.neutron_api.get_network.return_value = fake_nw_info
+
+        self.assertRaises(exception.NetworkBadConfigurationException,
+                          self.plugin._save_neutron_network_data,
+                          self.fake_context, fake_share_network)
 
     @mock.patch.object(db_api, 'share_network_update', mock.Mock())
     def test_save_neutron_subnet_data(self):
