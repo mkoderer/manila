@@ -14,14 +14,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import socket
+import time
+
 from oslo_config import cfg
+from oslo_log import log
 
 from manila.common import constants
 from manila import exception
+from manila.i18n import _
 from manila import network
 from manila.network.neutron import api as neutron_api
 from manila.network.neutron import constants as neutron_constants
 from manila import utils
+
+LOG = log.getLogger(__name__)
 
 neutron_single_network_plugin_opts = [
     cfg.StrOpt(
@@ -37,6 +44,24 @@ neutron_single_network_plugin_opts = [
              "'neutron_net_id'. This opt is used only with "
              "class 'NeutronSingleNetworkPlugin'.",
         deprecated_group='DEFAULT'),
+]
+
+neutron_bind_network_plugin_opts = [
+    cfg.StrOpt(
+        'neutron_vnic_type',
+        help="vNIC type used for binding",
+        choices=['baremetal', 'normal', 'direct',
+                 'direct-physical', 'macvtap'],
+        default='baremetal'),
+    cfg.IntOpt(
+        'neutron_bind_timeout',
+        help="Bind timeout in seconds",
+        default=240),
+    cfg.StrOpt(
+        "neutron_host_id",
+        help="Host id to be used when creating neutron port. If not set "
+             "host is set to manila-share host by default.",
+        default=None),
 ]
 
 CONF = cfg.CONF
@@ -113,12 +138,22 @@ class NeutronNetworkPlugin(network.NetworkBaseAPI):
         for port in ports:
             self._delete_port(context, port)
 
+    def _get_port_create_args(self, context, share_server, share_network,
+                              device_owner):
+        return {
+            "network_id": share_network['neutron_net_id'],
+            "subnet_id": share_network['neutron_subnet_id'],
+            "device_owner": 'manila:' + device_owner,
+            "device_id": share_server['id']
+        }
+
     def _create_port(self, context, share_server, share_network, device_owner):
+        create_args = self._get_port_create_args(context, share_server,
+                                                 share_network, device_owner)
+
         port = self.neutron_api.create_port(
-            share_network['project_id'],
-            network_id=share_network['neutron_net_id'],
-            subnet_id=share_network['neutron_subnet_id'],
-            device_owner='manila:' + device_owner)
+            share_network['project_id'], **create_args)
+
         port_dict = {
             'id': port['id'],
             'share_server_id': share_server['id'],
@@ -245,3 +280,68 @@ class NeutronSingleNetworkPlugin(NeutronNetworkPlugin):
             share_network = self.db.share_network_update(
                 context, share_network['id'], upd)
         return share_network
+
+
+class NeutronBindNetworkPlugin(NeutronNetworkPlugin):
+    def __init__(self, *args, **kwargs):
+        super(NeutronBindNetworkPlugin, self).__init__(*args, **kwargs)
+        CONF.register_opts(
+            neutron_bind_network_plugin_opts,
+            group=self.neutron_api.config_group_name)
+        if not self.neutron_api.has_port_binding_extension():
+            raise exception.NetworkBadConfigurationException(
+                "Binding network driver configured but neutron doesn't "
+                "support port binding.")
+
+    def _wait_for_ports_bind(self, context, ports, share_server, timeout=240):
+        t = time.time()
+        inactive_ports = []
+        while time.time() - t < timeout:
+            all_active = True
+            inactive_ports = []
+            for port in ports:
+                port = self._neutron_api.show_port(port['id'])
+                if (port['status'] == 'ERROR' or
+                        ('binding:vif_type' in port and
+                         port['binding:vif_type'] == 'binding_failed')):
+                    msg = _("Port %s is in state error") % port['id']
+                    raise exception.ManilaException(msg)
+                elif port['status'] != 'ACTIVE':
+                    LOG.debug("The port %(id)s is in state %(state)s. "
+                              "Wait for active state.",
+                              dict(id=port['id'],
+                                   state=port['status']))
+                    inactive_ports.append(port['id'])
+                    all_active = False
+            if all_active:
+                return
+            time.sleep(1)
+        msg = _("Ports are not bound during timeout for share server "
+                "'%(s_id)s' (inactive ports: %(ports)s)") % dict(
+            s_id=share_server['id'], ports=inactive_ports)
+        raise exception.ManilaException(msg)
+
+    def _get_port_create_args(self, context, share_server, share_network,
+                              device_owner):
+        args = super(NeutronBindNetworkPlugin, self)._get_port_create_args(
+            context, share_network, share_network, device_owner)
+        if self.neutron_api.configuration.neutron_host_id:
+            args['host_id'] = self.neutron_api.configuration.neutron_host_id
+        else:
+            args['host_id'] = socket.gethostname()
+        args['binding:vnic_type'] = (
+            self.neutron_api.configuration.neutron_vnic_type)
+        return args
+
+    def allocate_network(self, context, share_server, share_network, **kwargs):
+        ports = super(NeutronBindNetworkPlugin, self).allocate_network(
+            context, share_server, share_network, **kwargs)
+        config = self.neutron_api.configuration
+        self._wait_for_ports_bind(context, ports, share_server,
+                                  config.neutron_bind_timeout)
+        return ports
+
+
+class NeutronBindSingleNetworkPlugin(NeutronSingleNetworkPlugin,
+                                     NeutronBindNetworkPlugin):
+    pass
