@@ -184,6 +184,19 @@ elif [[ "$DRIVER" == "zfsonlinux" ]]; then
     iniset $TEMPEST_CONFIG share multitenancy_enabled False
     iniset $TEMPEST_CONFIG share multi_backend True
     iniset $TEMPEST_CONFIG share backend_replication_type 'readable'
+elif [[ "$DRIVER" == "container" ]]; then
+    MANILA_TEMPEST_CONCURRENCY=1
+    RUN_MANILA_CG_TESTS=False
+    RUN_MANILA_MANAGE_TESTS=False
+    iniset $TEMPEST_CONFIG share run_migration_tests False
+    iniset $TEMPEST_CONFIG share run_quota_tests False
+    iniset $TEMPEST_CONFIG share run_replication_tests False
+    iniset $TEMPEST_CONFIG share run_shrink_tests False
+    iniset $TEMPEST_CONFIG share run_snapshot_tests False
+    iniset $TEMPEST_CONFIG share capability_storage_protocol 'cifs'
+    iniset $TEMPEST_CONFIG share enable_protocols 'cifs'
+    iniset $TEMPEST_CONFIG share enable_user_rules_for_protocols 'cifs'
+    iniset $TEMPEST_CONFIG share enable_ip_rules_for_protocols ''
 fi
 
 # Enable consistency group tests
