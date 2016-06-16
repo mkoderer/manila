@@ -503,14 +503,12 @@ class NeutronBindNetworkPluginTest(test.TestCase):
         self.mock_object(self.bind_plugin.neutron_api, 'show_port')
         self.bind_plugin.neutron_api.show_port.return_value = fake_neutron_port
 
-        self.bind_plugin._wait_for_ports_bind(self.fake_context,
-                                              [fake_neutron_port],
+        self.bind_plugin._wait_for_ports_bind([fake_neutron_port],
                                               fake_share_server)
 
         self.bind_plugin.neutron_api.show_port.assert_called_once_with(
             fake_neutron_port['id'])
         self.sleep_mock.assert_not_called()
-        self.has_binding_ext_mock.assert_called_with()
 
     def test_wait_for_bind_error(self):
         fake_neut_port = copy.copy(fake_neutron_port)
@@ -520,7 +518,6 @@ class NeutronBindNetworkPluginTest(test.TestCase):
 
         self.assertRaises(exception.ManilaException,
                           self.bind_plugin._wait_for_ports_bind,
-                          self.fake_context,
                           [fake_neut_port, fake_neut_port],
                           fake_share_server,
                           timeout=1)
@@ -528,7 +525,6 @@ class NeutronBindNetworkPluginTest(test.TestCase):
         self.bind_plugin.neutron_api.show_port.assert_called_once_with(
             fake_neutron_port['id'])
         self.sleep_mock.assert_not_called()
-        self.has_binding_ext_mock.assert_called_with()
 
     @ddt.data(('DOWN', 'ACTIVE'), ('DOWN', 'DOWN'), ('ACTIVE', 'DOWN'))
     @mock.patch.object(time, 'time', side_effect=[1, 1, 3])
@@ -543,18 +539,11 @@ class NeutronBindNetworkPluginTest(test.TestCase):
 
         self.assertRaises(exception.ManilaException,
                           self.bind_plugin._wait_for_ports_bind,
-                          self.fake_context,
                           [fake_neut_port1, fake_neut_port2],
                           fake_share_server,
                           timeout=1)
 
         self.sleep_mock.assert_any_call(1)
-        self.has_binding_ext_mock.assert_called_with()
-
-    def test_no_binding_ext(self):
-        neutron_api.API.has_port_binding_extension.return_value = False
-        self.assertRaises(exception.ManilaException,
-                          plugin.NeutronBindNetworkPlugin)
 
     @mock.patch.object(db_api, 'network_allocation_create',
                        mock.Mock(return_values=fake_network_allocation))

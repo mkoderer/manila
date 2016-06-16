@@ -288,12 +288,19 @@ class NeutronBindNetworkPlugin(NeutronNetworkPlugin):
         CONF.register_opts(
             neutron_bind_network_plugin_opts,
             group=self.neutron_api.config_group_name)
-        if not self.neutron_api.has_port_binding_extension():
-            raise exception.NetworkBadConfigurationException(
-                "Binding network driver configured but neutron doesn't "
-                "support port binding.")
+        self.config = self.neutron_api.configuration
 
-    def _wait_for_ports_bind(self, context, ports, share_server, timeout=240):
+    def update_network_allocation(self, context, share_server):
+        if self.config.neutron_vnic_type == 'normal':
+            ports = self.db.network_allocations_get_for_share_server(
+                context,
+                share_server['id'])
+            self._wait_for_ports_bind(ports, share_server,
+                                      self.config.neutron_bind_timeout)
+            return ports
+        return None
+
+    def _wait_for_ports_bind(self, ports, share_server, timeout=240):
         t = time.time()
         inactive_ports = []
         while time.time() - t < timeout:
@@ -322,20 +329,30 @@ class NeutronBindNetworkPlugin(NeutronNetworkPlugin):
                               device_owner):
         args = super(NeutronBindNetworkPlugin, self)._get_port_create_args(
             context, share_network, share_network, device_owner)
-        if self.neutron_api.configuration.neutron_host_id:
-            args['host_id'] = self.neutron_api.configuration.neutron_host_id
+        if self.config.neutron_host_id:
+            args['host_id'] = self.config.neutron_host_id
         else:
             args['host_id'] = socket.gethostname()
         args['binding:vnic_type'] = (
-            self.neutron_api.configuration.neutron_vnic_type)
+            self.config.neutron_vnic_type)
         return args
 
-    def allocate_network(self, context, share_server, share_network, **kwargs):
+    def allocate_network(self, context, share_server, share_network=None,
+                         **kwargs):
         ports = super(NeutronBindNetworkPlugin, self).allocate_network(
             context, share_server, share_network, **kwargs)
-        config = self.neutron_api.configuration
-        self._wait_for_ports_bind(context, ports, share_server,
-                                  config.neutron_bind_timeout)
+        # If vnic type is 'normal' we expect a neutron agent to bind the
+        # ports. So we wait until the agent has done its job before returning
+        # the allocated ports.
+        # If vnic type is not 'normal', it might be necessary for the share
+        # driver to configure networking on the share server before the ports
+        # can be bound. Therefore we do not wait for the port binding here, but
+        # return the unbound ports and expect the share manager to call
+        # update_network_allocation after the share server was created, in
+        # order to update the ports with the correct binding.
+        if self.config.neutron_vnic_type != 'normal':
+            self._wait_for_ports_bind(ports, share_server,
+                                      self.config.neutron_bind_timeout)
         return ports
 
 
